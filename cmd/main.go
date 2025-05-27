@@ -59,22 +59,25 @@ func main() {
 			if err := json.NewDecoder(bytes.NewReader(result)).Decode(&scanResponse); err != nil {
 				fmt.Println("error parsing to json", err)
 			}
-			for _, site := range scanResponse.Site {
-				for _, alert := range site.Alerts {
-					fmt.Println(alert.Description)
-				}
-			}
 
 			switch len(cmd.String("output")) {
 			case 0: // print json
 				{
-					fmt.Println("no output")
-					fmt.Println(string(result))
+					scanJson, _ := json.MarshalIndent(scanResponse, "", "\t")
+					fmt.Println(string(scanJson))
 					break
 				}
 			default: // write to file
-				scanJson, _ := json.MarshalIndent(scanResponse, "", "\t")
-				fmt.Println(string(scanJson))
+				file, errFile := os.OpenFile(cmd.String("output"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.ModePerm)
+				if errFile != nil {
+					fmt.Println(errFile)
+				}
+				defer file.Close()
+				encoder := json.NewEncoder(file)
+				errEncoding := encoder.Encode(scanResponse)
+				if errEncoding != nil {
+					fmt.Println(errEncoding)
+				}
 			}
 			return nil
 		},
