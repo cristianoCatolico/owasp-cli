@@ -2,30 +2,39 @@ package api
 
 import (
 	"fmt"
-	"github.com/urfave/cli/v3"
 	"github.com/zaproxy/zap-api-go/zap"
 	"log"
 	"strconv"
 	"time"
 )
 
-func NewZapServer(target string, cmd *cli.Command) {
+type CliResult struct {
+	zap.Interface
+}
+
+func NewZapClient(url string) *CliResult {
 	cfg := &zap.Config{
-		Proxy: "http://127.0.0.1:8090",
+		Proxy: url,
 	}
 	client, err := zap.NewClient(cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
-	_, err = client.Script().Load("LogMessages.js", "httpsender", "Oracle Nashorn", "/zap/wrk/LogMessages.js", "", "")
-	if err != nil {
-		log.Fatal(err)
+	//_, err = client.Script().Load("LogMessages.js", "httpsender", "Oracle Nashorn", "/zap/wrk/LogMessages.js", "", "")
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	//_, err = client.Script().Enable("LogMessages.js")
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	cliResult := &CliResult{
+		Interface: client,
 	}
-	_, err = client.Script().Enable("LogMessages.js")
-	if err != nil {
-		log.Fatal(err)
-	}
+	return cliResult
+}
 
+func (client *CliResult) HandleScan(target string) []byte {
 	// Start spidering the target
 	fmt.Println("Spider : " + target)
 	resp, err := client.Spider().Scan(target, "", "", "", "")
@@ -38,12 +47,10 @@ func NewZapServer(target string, cmd *cli.Command) {
 		time.Sleep(1000 * time.Millisecond)
 		responseStatus, errStatus := client.Spider().Status(scanid)
 		if errStatus != nil {
-			fmt.Fprintf(cmd.Root().Writer, "Error %w", errStatus)
 			log.Fatal(err)
 		}
 		status := responseStatus["status"]
 		if status == nil {
-			fmt.Fprintf(cmd.Root().Writer, "status nulo")
 			break
 		}
 		progress, _ := strconv.Atoi(status.(string))
@@ -73,10 +80,9 @@ func NewZapServer(target string, cmd *cli.Command) {
 		}
 	}
 	fmt.Println("Active Scan complete")
-	fmt.Println("Alerts:")
-	report, err := client.Core().Xmlreport()
+	report, err := client.Core().Jsonreport()
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(string(report))
+	return report
 }

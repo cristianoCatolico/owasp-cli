@@ -1,16 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/kptm-tools/owasp-cli/internal/api"
+	"github.com/kptm-tools/owasp-cli/internal/config"
+	"github.com/kptm-tools/owasp-cli/internal/dto"
 	"github.com/urfave/cli/v3"
 	"log"
 	"os"
+	"strconv"
+	"time"
 )
 
 func main() {
-
+	c := config.LoadConfig()
+	zapClient := api.NewZapClient(c.Server.URL)
 	cmd := &cli.Command{
 		Name:      "owasp zap cli",
 		Version:   "v1.0.0",
@@ -26,12 +33,51 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:     "output",
-				Value:    "result",
+				Value:    "",
 				Usage:    "Path with the file name where is going to be saved the result",
 				Required: false,
 			},
+			&cli.StringFlag{
+				Name:     "timeout",
+				Value:    "",
+				Usage:    "Time duration to be canceled",
+				Required: false,
+			},
 		},
-		Action: handleAction,
+		Before: func(ctx context.Context, command *cli.Command) (context.Context, error) {
+			var timeout time.Duration
+			timeout = getTimeout(c, command)
+			// Create deadline for the shutdown of scan
+			ctxDeadline, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			return ctxDeadline, nil
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			result := zapClient.HandleScan(cmd.String("target"))
+			fmt.Println(cmd.String("output"))
+			var scanResponse *dto.JsonResult
+			if err := json.NewDecoder(bytes.NewReader(result)).Decode(&scanResponse); err != nil {
+				fmt.Println("error parsing to json", err)
+			}
+			for _, site := range scanResponse.Site {
+				for _, alert := range site.Alerts {
+					fmt.Println(alert.Description)
+				}
+			}
+
+			switch len(cmd.String("output")) {
+			case 0: // print json
+				{
+					fmt.Println("no output")
+					fmt.Println(string(result))
+					break
+				}
+			default: // write to file
+				scanJson, _ := json.MarshalIndent(scanResponse, "", "\t")
+				fmt.Println(string(scanJson))
+			}
+			return nil
+		},
 	}
 
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
@@ -46,8 +92,13 @@ func validateActionTarget(ctx context.Context, cmd *cli.Command, value string) e
 	return nil
 }
 
-func handleAction(ctx context.Context, cmd *cli.Command) error {
-
-	api.NewZapServer(cmd.String("target"), cmd)
-	return nil
+func getTimeout(c *config.Config, cmd *cli.Command) time.Duration {
+	var timeout int
+	switch len(cmd.String("timeout")) {
+	case 0:
+		timeout, _ = strconv.Atoi(c.Timeout)
+	default:
+		timeout, _ = strconv.Atoi(cmd.String("timeout"))
+	}
+	return time.Duration(timeout) * time.Second
 }
