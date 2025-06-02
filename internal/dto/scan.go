@@ -33,5 +33,5 @@ type Site struct {
 }
 
 type JsonResult struct {
-	Site []Site `json:"site"`
+	Sites []Site `json:"site"`
 }

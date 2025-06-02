@@ -8,6 +8,7 @@ import (
 	"github.com/kptm-tools/owasp-cli/internal/api"
 	"github.com/kptm-tools/owasp-cli/internal/config"
 	"github.com/kptm-tools/owasp-cli/internal/dto"
+	"github.com/kptm-tools/owasp-cli/internal/utils"
 	"github.com/urfave/cli/v3"
 	"log"
 	"os"
@@ -43,17 +44,53 @@ func main() {
 				Usage:    "Time duration to be canceled",
 				Required: false,
 			},
+			&cli.StringFlag{
+				Name:     "user",
+				Value:    "",
+				Usage:    "Use together with password flag to provide credentials for authenticate to a site",
+				Required: false,
+			},
+			&cli.StringFlag{
+				Name:     "password",
+				Value:    "",
+				Usage:    "Use together with user flag to provide credentials for authenticate to a site",
+				Required: false,
+			},
+			&cli.StringFlag{
+				Name:     "type",
+				Value:    "active",
+				Usage:    "Use to specify if is a passive or active scan",
+				Required: false,
+			},
 		},
-		Before: func(ctx context.Context, command *cli.Command) (context.Context, error) {
+		/*Before: func(ctx context.Context, command *cli.Command) (context.Context, error) {
 			var timeout time.Duration
 			timeout = getTimeout(c, command)
 			// Create deadline for the shutdown of scan
+			ctxDeadline, _ := context.WithTimeout(ctx, timeout)
+			return ctxDeadline, nil
+		},*/
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			var timeout time.Duration
+			timeout = getTimeout(c, cmd)
 			ctxDeadline, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
-			return ctxDeadline, nil
-		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			result := zapClient.HandleScan(cmd.String("target"))
+			credential := &dto.Credential{
+				User:     cmd.String("user"),
+				Password: cmd.String("password"),
+			}
+			if len(cmd.String("user")) == 0 || len(cmd.String("password")) == 0 {
+				credential = nil
+			}
+			result, errHandle := zapClient.HandleScan(
+				cmd.String("target"),
+				cmd.String("type"),
+				credential,
+				ctxDeadline)
+			if errHandle != nil {
+				fmt.Println(errHandle)
+			}
+			fmt.Println(string(result))
 			fmt.Println(cmd.String("output"))
 			var scanResponse *dto.JsonResult
 			if err := json.NewDecoder(bytes.NewReader(result)).Decode(&scanResponse); err != nil {
@@ -78,6 +115,7 @@ func main() {
 				if errEncoding != nil {
 					fmt.Println(errEncoding)
 				}
+				break
 			}
 			return nil
 		},
@@ -89,8 +127,9 @@ func main() {
 }
 
 func validateActionTarget(ctx context.Context, cmd *cli.Command, value string) error {
-	if len(value) == 0 {
-		return fmt.Errorf("flag target value %v must be a URL", value)
+	errValidation := utils.ValidateHost(value)
+	if len(value) == 0 || errValidation != nil {
+		return fmt.Errorf("flag target value %v must be a URL %w", value, errValidation)
 	}
 	return nil
 }
