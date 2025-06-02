@@ -63,13 +63,6 @@ func main() {
 				Required: false,
 			},
 		},
-		/*Before: func(ctx context.Context, command *cli.Command) (context.Context, error) {
-			var timeout time.Duration
-			timeout = getTimeout(c, command)
-			// Create deadline for the shutdown of scan
-			ctxDeadline, _ := context.WithTimeout(ctx, timeout)
-			return ctxDeadline, nil
-		},*/
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			var timeout time.Duration
 			timeout = getTimeout(c, cmd)

@@ -20,3 +20,6 @@ go run cmd/main.go --target https://www.unsaac.edu.pe --output out.json --timeou
 - Replace the `--target` value with the URL you want to scan. It is required
 - The `--output` flag specifies the file where the scan result will be saved. It is optional.
 - The `--timeout` flag sets the maximum scan duration in seconds before the process is canceled. It is optional.
+- The `--user` flag sets the user for authenticate. Should be together with the password flag. It is optional.
+- The `--password` flag sets the password for authenticate. Should be together with the user flag. It is optional.
+- The `--type` flag sets the type of scan. By default is active. We can specify to be passive. It is optional.
