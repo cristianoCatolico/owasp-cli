@@ -38,19 +38,33 @@ func (client *CliResult) HandleScan(target string, typeScan string, credential *
 	}
 }
 
+func (client *CliResult) ListScannerIDs(policyName string) error {
+
+	scanners, err := client.Ascan().Scanners(policyName)
+	if err != nil {
+		return err
+	}
+	for _, scanner := range scanners["scanners"].([]interface{}) {
+		scannerMap := scanner.(map[string]interface{})
+		fmt.Printf("ID: %s, Name: %s, Policy: %s\n",
+			scannerMap["id"], scannerMap["name"], scannerMap["policyId"])
+	}
+	return nil
+}
+
 func (client *CliResult) activeScan(target string, credential *dto.Credential, strength string, threshold string, ctx context.Context) ([]byte, error) {
 	// Set strength and threshold for all scanners in a policy
 	policyName := "Default Policy" // or your custom policy name
 	if len(strength) > 0 {
 		// Set strength (e.g., "LOW", "MEDIUM", "HIGH", "INSANE")
-		_, errStrength := client.Ascan().SetPolicyAttackStrength("", policyName, strings.ToUpper(strength))
+		_, errStrength := client.Ascan().SetPolicyAttackStrength("0", strings.ToUpper(strength), policyName)
 		if errStrength != nil {
 			log.Fatal(errStrength)
 		}
 	}
 	if len(threshold) > 0 {
 		// Set threshold (e.g., "OFF", "LOW", "MEDIUM", "HIGH")
-		_, errThreshold := client.Ascan().SetPolicyAlertThreshold("", policyName, strings.ToUpper(threshold))
+		_, errThreshold := client.Ascan().SetPolicyAlertThreshold("0", strings.ToUpper(threshold), policyName)
 		if errThreshold != nil {
 			log.Fatal(errThreshold)
 		}

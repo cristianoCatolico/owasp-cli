@@ -80,6 +80,7 @@ func main() {
 			timeout = getTimeout(c, cmd)
 			ctxDeadline, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
+
 			credential := &dto.Credential{
 				User:     cmd.String("user"),
 				Password: cmd.String("password"),
