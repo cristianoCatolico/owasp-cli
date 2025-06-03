@@ -62,6 +62,18 @@ func main() {
 				Usage:    "Use to specify if is a passive or active scan",
 				Required: false,
 			},
+			&cli.StringFlag{
+				Name:     "strength",
+				Value:    "low",
+				Usage:    "Use to determine the number of attacks within scan",
+				Required: false,
+			},
+			&cli.StringFlag{
+				Name:     "threshold",
+				Value:    "low",
+				Usage:    "Use to dictate how scan must be before reporting a vulnerability",
+				Required: false,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			var timeout time.Duration
@@ -79,6 +91,8 @@ func main() {
 				cmd.String("target"),
 				cmd.String("type"),
 				credential,
+				cmd.String("strength"),
+				cmd.String("threshold"),
 				ctxDeadline)
 			if errHandle != nil {
 				fmt.Println(errHandle)

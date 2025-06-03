@@ -7,6 +7,7 @@ import (
 	"github.com/zaproxy/zap-api-go/zap"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,157 +23,197 @@ func NewZapClient(url string) *CliResult {
 	if err != nil {
 		log.Fatal(err)
 	}
-	//_, err = client.Script().Load("LogMessages.js", "httpsender", "Oracle Nashorn", "/zap/wrk/LogMessages.js", "", "")
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
-	//_, err = client.Script().Enable("LogMessages.js")
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
 	cliResult := &CliResult{
 		Interface: client,
 	}
 	return cliResult
 }
 
-func (client *CliResult) HandleScan(target string, typeScan string, credential *dto.Credential, ctx context.Context) ([]byte, error) {
-
-	var (
-		result []byte
-		err    error
-		done   = make(chan struct{})
-	)
-
-	go func() {
-		switch typeScan {
-		case "passive":
-			result, err = client.passiveScan(target, credential)
-		default:
-			result, err = client.activeScan(target, credential)
-		}
-		close(done)
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("cancelled by timeout")
-	case <-done:
-		return result, err
+func (client *CliResult) HandleScan(target string, typeScan string, credential *dto.Credential, strength string, threshold string, ctx context.Context) ([]byte, error) {
+	switch typeScan {
+	case "passive":
+		return client.passiveScan(target, credential, ctx)
+	default:
+		return client.activeScan(target, credential, strength, threshold, ctx)
 	}
 }
 
-func (client *CliResult) activeScan(target string, credential *dto.Credential) ([]byte, error) {
-	if credential == nil {
-		resp, err := client.Spider().Scan(target, "", "", "", "")
-		if err != nil {
-			log.Fatal(err)
+func (client *CliResult) activeScan(target string, credential *dto.Credential, strength string, threshold string, ctx context.Context) ([]byte, error) {
+	// Set strength and threshold for all scanners in a policy
+	policyName := "Default Policy" // or your custom policy name
+	if len(strength) > 0 {
+		// Set strength (e.g., "LOW", "MEDIUM", "HIGH", "INSANE")
+		_, errStrength := client.Ascan().SetPolicyAttackStrength("", policyName, strings.ToUpper(strength))
+		if errStrength != nil {
+			log.Fatal(errStrength)
 		}
-		// The scan now returns a scan id to support concurrent scanning
-		scanId := resp["scan"].(string)
-		client.monitorStatus(scanId, true)
-		fmt.Println("Spider complete")
-
-		// Give the passive scanner a chance to complete
-		time.Sleep(2000 * time.Millisecond)
-
-		fmt.Println("Active scan : " + target)
-		resp, err = client.Ascan().Scan(target, "True", "False", "", "", "", "")
-		if err != nil {
-			log.Fatal(err)
+	}
+	if len(threshold) > 0 {
+		// Set threshold (e.g., "OFF", "LOW", "MEDIUM", "HIGH")
+		_, errThreshold := client.Ascan().SetPolicyAlertThreshold("", policyName, strings.ToUpper(threshold))
+		if errThreshold != nil {
+			log.Fatal(errThreshold)
 		}
-		// The scan now returns a scan id to support concurrent scanning
-		scanId = resp["scan"].(string)
+	}
+
+	var (
+		result       []byte
+		scanId       string
+		scanSpiderId string
+		contextName  string
+		errFunc      error
+		done         = make(chan struct{})
+	)
+	go func() {
+		if credential == nil {
+			resp, errSpider := client.Spider().Scan(target, "", "", "", "")
+			if errSpider != nil {
+				result, errFunc = nil, errSpider
+				close(done)
+			}
+			// The scan now returns a scan id to support concurrent scanning
+			scanSpiderId = resp["scan"].(string)
+			client.monitorStatus(scanSpiderId, true)
+			fmt.Println("Spider complete")
+
+			// Give the passive scanner a chance to complete
+			time.Sleep(2000 * time.Millisecond)
+
+			fmt.Println("Active scan : " + target)
+			resp, errScan := client.Ascan().Scan(target, "True", "False", "", "", "", "")
+			if errScan != nil {
+				result, errFunc = nil, errScan
+				close(done)
+			}
+			// The scan now returns a scan id to support concurrent scanning
+			scanId = resp["scan"].(string)
+			client.monitorStatus(scanId, false)
+			fmt.Println("Active Scan complete")
+			report, errReport := client.Core().Jsonreport()
+			if errReport != nil {
+				result, errFunc = nil, errReport
+				close(done)
+			}
+			result, errFunc = report, nil
+			close(done)
+		}
+		contextName = "active-context"
+		// 1. Create context
+		respContext, errNewContext := client.Context().NewContext(contextName)
+		if errNewContext != nil {
+			result, errFunc = nil, errNewContext
+			close(done)
+		}
+		fmt.Println(respContext)
+		contextID := respContext["contextId"].(string)
+
+		// 2. Include target in context
+		includeRegex := target + ".*"
+		_, errIncludeContext := client.Context().IncludeInContext("active-context", includeRegex)
+		if errIncludeContext != nil {
+			result, errFunc = nil, errIncludeContext
+			close(done)
+		}
+
+		// 3. Set authentication method (example: form-based)
+		_, errAuthMethod := client.Authentication().SetAuthenticationMethod(
+			contextID,
+			"formBasedAuthentication",
+			"loginUrl="+target,
+		)
+		if errAuthMethod != nil {
+			result, errFunc = nil, errAuthMethod
+			close(done)
+		}
+
+		// 4. Add user with credentials
+		userResp, errNewUser := client.Users().NewUser(contextID, "testuser")
+		if errNewUser != nil {
+			result, errFunc = nil, errNewUser
+			close(done)
+		}
+		userID := userResp["userId"].(string)
+
+		_, errAuthCredential := client.Users().SetAuthenticationCredentials(
+			contextID,
+			userID,
+			"username="+credential.User+"&password="+credential.Password,
+		)
+		if errAuthCredential != nil {
+			result, errFunc = nil, errAuthCredential
+			close(done)
+		}
+
+		_, errUserEnabled := client.Users().SetUserEnabled(contextID, userID, "True")
+		if errUserEnabled != nil {
+			result, errFunc = nil, errUserEnabled
+			close(done)
+		}
+
+		// 5. Spider as user
+		spiderResp, errSpider := client.Spider().ScanAsUser(target, contextID, userID, "", "true", "")
+		if errSpider != nil {
+			result, errFunc = nil, errSpider
+			close(done)
+		}
+		scanSpiderId = spiderResp["scan"].(string)
+		client.monitorStatus(scanSpiderId, true)
+		fmt.Println("Spider as user complete")
+
+		// 6. Start active scan as user
+		scanResp, errScanAsUser := client.Ascan().ScanAsUser(target, contextID, userID, "True", "", "", "")
+		if errScanAsUser != nil {
+			result, errFunc, scanId = nil, errScanAsUser, ""
+			close(done)
+		}
+		scanId = scanResp["scan"].(string)
+		// 7. Monitor status of scan
 		client.monitorStatus(scanId, false)
 		fmt.Println("Active Scan complete")
-		report, err := client.Core().Jsonreport()
-		if err != nil {
-			log.Fatal(err)
+
+		// 8. Generate report
+		report, errReport := client.Core().Jsonreport()
+		if errReport != nil {
+			result, errFunc, scanId = nil, errReport, ""
+			close(done)
 		}
-		return report, nil
+		result, errFunc, scanId = report, nil, ""
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		if scanSpiderId != "" {
+			stopResponse, err := client.Spider().Stop(scanSpiderId)
+			if err != nil {
+				fmt.Println(err)
+			}
+			fmt.Println(stopResponse)
+		}
+		if scanId != "" {
+			stopResponse, err := client.Ascan().Stop(scanId)
+			if err != nil {
+				fmt.Println(err)
+			}
+			fmt.Println(stopResponse)
+		}
+		if contextName != "" {
+			respRemove, errRemoveContext := client.Context().RemoveContext(contextName)
+			if errRemoveContext != nil {
+				fmt.Println(errRemoveContext)
+			}
+			fmt.Println(respRemove)
+		}
+		return nil, fmt.Errorf("active scan cancelled or timed out")
+	case <-done:
+		if contextName != "" {
+			respRemove, errRemoveContext := client.Context().RemoveContext(contextName)
+			if errRemoveContext != nil {
+				fmt.Println(errRemoveContext)
+			}
+			fmt.Println(respRemove)
+		}
+		return result, errFunc
 	}
-	contextName := "active-context"
-	// 1. Create context
-	respContext, err := client.Context().NewContext(contextName)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(respContext)
-	contextID := respContext["contextId"].(string)
-
-	// 2. Include target in context
-	includeRegex := target + ".*"
-	respInclude, err := client.Context().IncludeInContext("active-context", includeRegex)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(respInclude)
-
-	// 3. Set authentication method (example: form-based)
-	_, err = client.Authentication().SetAuthenticationMethod(
-		contextID,
-		"formBasedAuthentication",
-		"loginUrl="+target,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 4. Add user with credentials
-	userResp, err := client.Users().NewUser(contextID, "testuser")
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(userResp)
-	userID := userResp["userId"].(string)
-
-	_, err = client.Users().SetAuthenticationCredentials(
-		contextID,
-		userID,
-		"username="+credential.User+"&password="+credential.Password,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	_, err = client.Users().SetUserEnabled(contextID, userID, "True")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 5. Spider as user
-	spiderResp, err := client.Spider().ScanAsUser(target, contextID, userID, "", "true", "")
-	if err != nil {
-		log.Fatal(err)
-	}
-	spiderId := spiderResp["scan"].(string)
-	client.monitorStatus(spiderId, true)
-	fmt.Println("Spider as user complete")
-
-	// 6. Start active scan as user
-	scanResp, err := client.Ascan().ScanAsUser(target, contextID, userID, "True", "", "", "")
-	if err != nil {
-		log.Fatal(err)
-	}
-	scanID := scanResp["scan"].(string)
-	// 7. Monitor status of scan
-	client.monitorStatus(scanID, false)
-	fmt.Println("Active Scan complete")
-
-	// 8. Generate report
-	report, err := client.Core().Jsonreport()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 9. Remove context (cleanup)
-	respRemove, errRemoveContext := client.Context().RemoveContext(contextName)
-	if errRemoveContext != nil {
-		return nil, errRemoveContext
-	}
-	fmt.Println(respRemove)
-
-	return report, nil
 }
 
 func (client *CliResult) monitorStatus(scanId string, isSpider bool) {
@@ -202,23 +243,119 @@ func (client *CliResult) monitorStatus(scanId string, isSpider bool) {
 	}
 }
 
-func (client *CliResult) passiveScan(target string, credential *dto.Credential) ([]byte, error) {
-	if credential == nil {
-		fmt.Println("Spider : " + target)
-		resp, err := client.Spider().Scan(target, "", "True", "", "")
-		if err != nil {
-			log.Fatal(err)
-		}
-		scanSpiderId := resp["scan"].(string)
-		client.monitorStatus(scanSpiderId, true)
-		fmt.Println("Spider complete")
+func (client *CliResult) passiveScan(target string, credential *dto.Credential, ctx context.Context) ([]byte, error) {
+	var (
+		result      []byte
+		scanId      string
+		contextName string
+		errFunc     error
+		done        = make(chan struct{})
+	)
+	go func() {
+		if credential == nil {
+			fmt.Println("Spider : " + target)
+			resp, errScanSpider := client.Spider().Scan(target, "", "True", "", "")
+			if errScanSpider != nil {
+				result, errFunc, scanId = nil, errScanSpider, ""
+			}
+			scanId = resp["scan"].(string)
+			client.monitorStatus(scanId, true)
+			fmt.Println("Spider complete")
 
-		// Wait for passive scan to finish
+			// Wait for passive scan to finish
+			for {
+				time.Sleep(2 * time.Second)
+				pscanStatus, errRecord := client.Pscan().RecordsToScan()
+				if errRecord != nil {
+					result, errFunc = nil, errRecord
+					close(done)
+				}
+				records, _ := strconv.Atoi(pscanStatus["recordsToScan"].(string))
+				fmt.Printf("Passive Scan records left: %d\n", records)
+				if records == 0 {
+					break
+				}
+			}
+			fmt.Println("Passive Scan complete")
+
+			report, errReport := client.Core().Jsonreport()
+			if errReport != nil {
+				result, errFunc, scanId = nil, errReport, ""
+				close(done)
+			}
+			result, errFunc, scanId = report, nil, ""
+			close(done)
+		}
+
+		contextName = "passive-context"
+		// 1. Create context
+		respContext, errNewContext := client.Context().NewContext(contextName)
+		if errNewContext != nil {
+			result, errFunc, scanId = nil, errNewContext, ""
+			close(done)
+		}
+		contextID := respContext["contextId"].(string)
+
+		// 2. Include target in context
+		includeRegex := target + ".*"
+		_, errIncludeInContext := client.Context().IncludeInContext(contextName, includeRegex)
+		if errIncludeInContext != nil {
+			result, errFunc, scanId = nil, errIncludeInContext, ""
+			close(done)
+		}
+
+		// 3. Set authentication method (example: form-based)
+		_, errAuthMethod := client.Authentication().SetAuthenticationMethod(
+			contextID,
+			"formBasedAuthentication",
+			"loginUrl="+target,
+		)
+		if errAuthMethod != nil {
+			result, errFunc, scanId = nil, errAuthMethod, ""
+			close(done)
+		}
+
+		// 4. Add user with credentials
+		userResp, errNewUser := client.Users().NewUser(contextID, "testuser")
+		if errNewUser != nil {
+			result, errFunc, scanId = nil, errNewUser, ""
+			close(done)
+		}
+
+		userID := userResp["userId"].(string)
+		_, errAuthCredential := client.Users().SetAuthenticationCredentials(
+			contextID,
+			userID,
+			"username="+credential.User+"&password="+credential.Password,
+		)
+		if errAuthCredential != nil {
+			result, errFunc, scanId = nil, errAuthCredential, ""
+			close(done)
+		}
+
+		_, errSetUser := client.Users().SetUserEnabled(contextID, userID, "True")
+		if errSetUser != nil {
+			result, errFunc, scanId = nil, errSetUser, ""
+			close(done)
+		}
+
+		// 5. Spider as user
+		spiderResp, errScanAsUser := client.Spider().ScanAsUser(target, contextID, userID, "", "True", "")
+		if errScanAsUser != nil {
+			result, errFunc, scanId = nil, errScanAsUser, ""
+			close(done)
+		}
+		scanId = spiderResp["scan"].(string)
+		client.monitorStatus(scanId, true)
+		fmt.Println("Spider as user complete")
+
+		// 6. Wait for passive scan to finish
 		for {
 			time.Sleep(2 * time.Second)
-			pscanStatus, err := client.Pscan().RecordsToScan()
-			if err != nil {
-				log.Fatal(err)
+			pscanStatus, errRecords := client.Pscan().RecordsToScan()
+			if errRecords != nil {
+				result, errFunc = nil, errRecords
+				close(done)
 			}
 			records, _ := strconv.Atoi(pscanStatus["recordsToScan"].(string))
 			fmt.Printf("Passive Scan records left: %d\n", records)
@@ -228,92 +365,41 @@ func (client *CliResult) passiveScan(target string, credential *dto.Credential) 
 		}
 		fmt.Println("Passive Scan complete")
 
-		report, err := client.Core().Jsonreport()
-		if err != nil {
-			log.Fatal(err)
+		// 7. Generate report
+		report, errReport := client.Core().Jsonreport()
+		if errReport != nil {
+			result, errFunc, scanId = nil, errReport, ""
+			close(done)
 		}
-		return report, nil
-	}
 
-	contextName := "passive-context"
-	// 1. Create context
-	respContext, err := client.Context().NewContext(contextName)
-	if err != nil {
-		log.Fatal(err)
-	}
-	contextID := respContext["contextId"].(string)
-
-	// 2. Include target in context
-	includeRegex := target + ".*"
-	_, err = client.Context().IncludeInContext(contextName, includeRegex)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 3. Set authentication method (example: form-based)
-	_, err = client.Authentication().SetAuthenticationMethod(
-		contextID,
-		"formBasedAuthentication",
-		"loginUrl="+target,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 4. Add user with credentials
-	userResp, err := client.Users().NewUser(contextID, "testuser")
-	if err != nil {
-		log.Fatal(err)
-	}
-	userID := userResp["userId"].(string)
-
-	_, err = client.Users().SetAuthenticationCredentials(
-		contextID,
-		userID,
-		"username="+credential.User+"&password="+credential.Password,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	_, err = client.Users().SetUserEnabled(contextID, userID, "True")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 5. Spider as user
-	spiderResp, err := client.Spider().ScanAsUser(target, contextID, userID, "", "True", "")
-	if err != nil {
-		log.Fatal(err)
-	}
-	spiderId := spiderResp["scan"].(string)
-	client.monitorStatus(spiderId, true)
-	fmt.Println("Spider as user complete")
-
-	// 6. Wait for passive scan to finish
-	for {
-		time.Sleep(2 * time.Second)
-		pscanStatus, err := client.Pscan().RecordsToScan()
-		if err != nil {
-			log.Fatal(err)
+		result, errFunc, scanId = report, nil, ""
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		if scanId != "" {
+			stopResponse, err := client.Spider().Stop(scanId)
+			if err != nil {
+				fmt.Println(err)
+			}
+			fmt.Println(stopResponse)
 		}
-		records, _ := strconv.Atoi(pscanStatus["recordsToScan"].(string))
-		fmt.Printf("Passive Scan records left: %d\n", records)
-		if records == 0 {
-			break
+		if contextName != "" {
+			respRemove, errRemoveContext := client.Context().RemoveContext(contextName)
+			if errRemoveContext != nil {
+				fmt.Println(errRemoveContext)
+			}
+			fmt.Println(respRemove)
 		}
+		return nil, fmt.Errorf("passive scan cancelled or timed out")
+	case <-done:
+		if contextName != "" {
+			respRemove, errRemoveContext := client.Context().RemoveContext(contextName)
+			if errRemoveContext != nil {
+				fmt.Println(errRemoveContext)
+			}
+			fmt.Println(respRemove)
+		}
+		return result, errFunc
 	}
-	fmt.Println("Passive Scan complete")
-
-	// 7. Generate report
-	report, err := client.Core().Jsonreport()
-	if err != nil {
-		log.Fatal(err)
-	}
-	respRemove, errRemoveContext := client.Context().RemoveContext(contextID)
-	if errRemoveContext != nil {
-		return nil, errRemoveContext
-	}
-	fmt.Println(respRemove)
-	return report, nil
 }
