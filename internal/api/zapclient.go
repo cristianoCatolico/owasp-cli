@@ -40,7 +40,7 @@ func (client *CliResult) HandleScan(target string, typeScan string, credential *
 
 func (client *CliResult) ListScannerIDs(policyName string) error {
 
-	scanners, err := client.Ascan().Scanners(policyName)
+	scanners, err := client.Ascan().Scanners(policyName, "")
 	if err != nil {
 		return err
 	}
