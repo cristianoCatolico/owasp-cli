@@ -64,13 +64,13 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:     "strength",
-				Value:    "low",
+				Value:    "medium",
 				Usage:    "Use to determine the number of attacks within scan",
 				Required: false,
 			},
 			&cli.StringFlag{
 				Name:     "threshold",
-				Value:    "low",
+				Value:    "medium",
 				Usage:    "Use to dictate how scan must be before reporting a vulnerability",
 				Required: false,
 			},
